@@ -48,11 +48,13 @@ Client は起動時は 192.168.56.10 の静的 IP です。Relay 経由で DHCP 
 vagrant ssh client
 # クライアントNWのインターフェース名を確認（例: eth1 や enp0s8）
 ip -4 addr show
-# そのインターフェースで DHCP 取得（例: eth1 の場合）
-sudo dhclient -r eth1
+# 静的IPをパージしてから DHCP 取得（例: eth1 の場合）
+sudo ip addr flush dev eth1
 sudo dhclient -v eth1
 # 192.168.56.100〜200 の範囲でアドレスが取れれば成功
 ```
+
+補足: `ip addr flush dev eth1` でインターフェースから静的アドレス（192.168.56.10）を削除します。`dhclient -r` は DHCP リースの解放のみで、Vagrant が付与した静的IPは残るため、flush してから dhclient するのが確実です。
 
 ## 参考
 

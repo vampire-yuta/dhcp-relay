@@ -1,4 +1,4 @@
-.PHONY: help up down halt destroy ssh-client ssh-relay ssh-dhcpserver status reload provision update
+.PHONY: help up down halt destroy ssh-client ssh-relay ssh-dhcpserver status ps reload provision update
 
 help: ## このヘルプメッセージを表示
 	@echo "利用可能なコマンド:"
@@ -28,6 +28,9 @@ ssh-dhcpserver: ## DHCP Server に SSH
 
 status: ## VM の状態を確認
 	vagrant status
+
+ps: status ## VM の状態を確認（status のエイリアス）
+	@vagrant status
 
 reload: ## 全VMを再起動（設定変更を反映）
 	vagrant reload

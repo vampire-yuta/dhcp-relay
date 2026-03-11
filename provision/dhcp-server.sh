@@ -4,8 +4,13 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y isc-dhcp-server
 
-# 192.168.57.3 が付いているNICを検出（Debian は enp0s8 等の可能性あり）
-SERVER_IF=$(ip -o -4 addr show | grep "192.168.57.3" | awk '{print $2}' | head -1)
+# ネットワーク付与を待ってからNICを検出（Vagrant が eth1/enp0s8 等に割り当て）
+sleep 3
+SERVER_IF=$(ip -o -4 addr show | grep "192.168.57" | awk '{print $2}' | head -1)
+if [ -z "$SERVER_IF" ]; then
+  # フォールバック: デフォルトルートでない方のインターフェース（2番目）
+  SERVER_IF=$(ip -o -4 addr show | awk '{print $2}' | grep -v "^lo$" | tail -n +2 | head -1)
+fi
 SERVER_IF="${SERVER_IF:-eth1}"
 cat > /etc/default/isc-dhcp-server << EOF
 INTERFACESv4="$SERVER_IF"
@@ -33,4 +38,14 @@ subnet 192.168.57.0 netmask 255.255.255.0 {
 EOF
 
 systemctl enable isc-dhcp-server
-systemctl restart isc-dhcp-server
+# 起動失敗時は無視（次回 reboot や手動 start で対処可能）
+systemctl start isc-dhcp-server || true
+if ! systemctl is-active --quiet isc-dhcp-server; then
+  echo "Warning: isc-dhcp-server failed to start. Check: systemctl status isc-dhcp-server"
+  echo "  Interface may not be ready yet. Try: vagrant ssh dhcpserver -c 'sudo systemctl start isc-dhcp-server'"
+fi
+
+# クライアントNW (192.168.56.0/24) への戻り経路を追加
+# Relay (192.168.57.2) が 192.168.56.0/24 を担当しているため、
+# DHCP Server からクライアントへのユニキャスト応答が正しく返るようにする。
+ip route add 192.168.56.0/24 via 192.168.57.2 || true
