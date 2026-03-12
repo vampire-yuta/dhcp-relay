@@ -1,21 +1,23 @@
 # DHCP Relay 検証環境
 
-Vagrant で「Linux Client / DHCP Relay / DHCP Server」を 2 セグメントに分けた構成を再現します。
+Vagrant で **3 セグメント（56/57/58）+ ルータ + DHCP Server（59.0）** の構成を再現します。各セグメントに Client と Relay がおり、ルータを経由して中央の DHCP Server と通信します。
 
 ## 構成の考え方
 
-- **Linux Client** と **DHCP Relay** は **同一 NW**（192.168.56.0/24）
-- **DHCP Server** は **別 NW**（192.168.57.0/24）
-- Relay が 2 つの NW にまたがり、クライアントの DHCP 要求をサーバへ中継する「あるべき形」の構成です（RFC 1542 等で規定される一般的な DHCP Relay の使い方です）。
+- **56.0/24**: Client1, Relay1, Router（1 本目）
+- **57.0/24**: Client2, Relay2, Router（2 本目）
+- **58.0/24**: Client3, Relay3, Router（3 本目）
+- **59.0/24**: Router（4 本目）, DHCP Server
+
+クライアントの DHCP ブロードキャストは同じセグメントのリレーが受け、リレーは DHCP サーバ (59.0) 宛にユニキャスト転送。ルータが 56/57/58 と 59 の間を転送し、サーバは 56/57/58 宛の応答をルータ経由で返します（RFC 1542 等の DHCP Relay の一般的な形）。
 
 ```
-[ 192.168.56.0/24 ]              [ 192.168.57.0/24 ]
-  Linux Client                      DHCP Server
-  192.168.56.10                     192.168.57.3
-        |                                    ^
-        | (DHCP broadcast)                    | (unicast)
-        v                                    |
-  DHCP Relay  -------- 192.168.56.2  192.168.57.2 -------
+192.168.56.0/24    192.168.57.0/24    192.168.58.0/24    192.168.59.0/24
+  Client1 .10          Client2 .10          Client3 .10          DHCP Server .3
+  Relay1  .2           Relay2  .2           Relay3  .2               ^
+      \                     \                     \                   |
+       \_____________________\_____________________\______ Router _____/
+                              .56.1   .57.1   .58.1   .59.1
 ```
 
 ### giaddr（Gateway IP Address）について
@@ -23,10 +25,10 @@ Vagrant で「Linux Client / DHCP Relay / DHCP Server」を 2 セグメントに
 DHCP リレーでは、**どのネットワーク向けの要求か**をサーバが判断するために **giaddr** が使われます。
 
 - **誰がセットするか**: リレーが、クライアントから受け取った DHCP パケットをサーバに転送するときに **giaddr を書き込む**。クライアント送信時点では giaddr は 0。
-- **何が入るか**: リレーが持っている IP のうち、**クライアント側のインターフェースのアドレス**。上図なら、クライアント NW 側の 192.168.56.2 が giaddr になる。
+- **何が入るか**: リレーが持っている IP のうち、**クライアント側のインターフェースのアドレス**（例: Relay1 なら 192.168.56.2）。
 - **サーバの使い方**: サーバは転送されてきたパケットの giaddr を見て、「この giaddr が属する subnet」の `subnet` ブロック（とその `range`）を選び、そこからアドレスを割り当てる。そのため、**どのセグメントのクライアントかは IP ではなく giaddr で識別される**（まだアドレスをもらっていないクライアントを IP では識別できないため）。
 
-複数セグメント（例: 56.0/24, 57.0/24）がある場合も、各リレーがそれぞれのクライアント側 IF の IP を giaddr に付けるので、サーバは giaddr に応じて 56.x / 57.x を自動的に振り分けられる。
+複数セグメント（56/57/58）がある場合も、各リレーがそれぞれのクライアント側 IF の IP を giaddr に付けるので、サーバは giaddr に応じて 56.x / 57.x / 58.x を自動的に振り分けます。
 
 ## 必要なもの
 
@@ -42,9 +44,14 @@ make up
 vagrant up
 
 # 各マシンに SSH
-make ssh-client    # vagrant ssh client
-make ssh-relay     # vagrant ssh relay
-make ssh-dhcpserver # vagrant ssh dhcpserver
+make ssh-client1     # vagrant ssh client1  (56.0)
+make ssh-client2     # client2 (57.0)
+make ssh-client3     # client3 (58.0)
+make ssh-relay1      # relay1
+make ssh-relay2      # relay2
+make ssh-relay3      # relay3
+make ssh-router      # ルータ（4 NIC）
+make ssh-dhcpserver  # DHCP Server (59.0)
 
 # 停止
 make down
@@ -52,73 +59,24 @@ make down
 
 ## DHCP 取得のテスト（Client 側）
 
-Client は起動時は 192.168.56.10 の静的 IP です。Relay 経由で DHCP を取得するテストをする場合:
+各 Client は起動時は静的 IP（56.10 / 57.10 / 58.10）です。Relay → ルータ → DHCP Server 経由で DHCP を取得するテスト:
 
 ```bash
-vagrant ssh client
-# クライアントNWのインターフェース名を確認（例: eth1 や enp0s8）
+# 例: Client1 (56.0) で取得 → 192.168.56.100〜200 が取れれば成功
+vagrant ssh client1
 ip -4 addr show
-# 静的IPをパージしてから DHCP 取得（例: eth1 の場合）
 sudo ip addr flush dev eth1
 sudo dhclient -v eth1
-# 192.168.56.100〜200 の範囲でアドレスが取れれば成功
+
+# Client2 なら 57.100〜200、Client3 なら 58.100〜200 の範囲
 ```
 
-補足: `ip addr flush dev eth1` でインターフェースから静的アドレス（192.168.56.10）を削除します。`dhclient -r` は DHCP リースの解放のみで、Vagrant が付与した静的IPは残るため、flush してから dhclient するのが確実です。
+補足: `ip addr flush dev eth1` でインターフェースから静的アドレスを削除してから `dhclient` すると確実です。`dhclient -r` だけでは Vagrant が付与した静的 IP は残ります。
 
-## 別構成の例: DHCP Server が複数 NIC で各セグメントに直結
+## 別構成の例: DHCP Server が各セグメントに直結する場合
 
-次のように **DHCP Server が 56/57/58 の各ネットワークに直接つながっている**場合は、Relay を跨ぐ必要がなく、各セグメントごとに `subnet` を定義し、その NIC で listen すればよいです。
-
-```
-192.168.56.0/24    192.168.57.0/24    192.168.58.0/24
-  Client1             Client2             Client3
-  Relay1              Relay2              Relay3
-  DHCP Server -------- DHCP Server -------- DHCP Server
-  (eth1 .56.x)        (eth2 .57.x)        (eth3 .58.x)
-```
-
-### `/etc/default/isc-dhcp-server`
-
-各セグメント用の NIC をすべて指定します。
-
-```
-INTERFACESv4="eth1 eth2 eth3"
-INTERFACESv6=""
-```
-
-### `/etc/dhcp/dhcpd.conf` の例
-
-各ネットワークに 1 つずつ `subnet` を書き、`option routers` はそのセグメントのリレー（またはデフォルトゲートウェイ）の IP にします。サーバは全セグメントに直結しているので、**スタティックルートの追加は不要**です。
-
-```
-default-lease-time 600;
-max-lease-time 7200;
-authoritative;
-
-subnet 192.168.56.0 netmask 255.255.255.0 {
-  range 192.168.56.100 192.168.56.200;
-  option routers 192.168.56.2;
-  option subnet-mask 255.255.255.0;
-}
-
-subnet 192.168.57.0 netmask 255.255.255.0 {
-  range 192.168.57.100 192.168.57.200;
-  option routers 192.168.57.2;
-  option subnet-mask 255.255.255.0;
-}
-
-subnet 192.168.58.0 netmask 255.255.255.0 {
-  range 192.168.58.100 192.168.58.200;
-  option routers 192.168.58.2;
-  option subnet-mask 255.255.255.0;
-}
-```
-
-- 各 `subnet` は「そのセグメントにいるクライアント向け」の定義。
-- `option routers` はそのセグメントのゲートウェイ（ここでは Relay1=56.2, Relay2=57.2, Relay3=58.2 を想定）。
+DHCP Server が 56/57/58 の各ネットワークに **直接** つながっている場合は、ルータは不要で、サーバの各 NIC で listen し、56/57/58 用の `subnet` を定義すればよいです。その場合は 56/57/58 宛のスタティックルートも不要です（本リポジトリの現在の構成は「ルータ経由で 59.0 にサーバ 1 台」です）。
 
 ## 参考
 
 - freepbx フォルダの Vagrantfile / Makefile をベースにしています。
-# dhcp-relay
